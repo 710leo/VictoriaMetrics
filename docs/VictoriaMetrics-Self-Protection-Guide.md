@@ -107,70 +107,44 @@ VictoriaMetrics 支持两种部署模式：
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  Layer 1: 网络层保护                                          │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  lib/httpserver/httpserver.go                           │  │
-│  │  • ReadHeaderTimeout: 5s (读取请求头超时)               │  │
-│  │  • IdleConnTimeout: 1min (空闲连接超时)                 │  │
-│  │  • ConnTimeout: 2min (连接生命周期)                     │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 读取请求头超时                                             │
+│  • 空闲连接超时                                               │
+│  • 连接生命周期限制                                           │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  Layer 2: 并发控制                                            │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  lib/writeconcurrencylimiter/concurrencylimiter.go      │  │
-│  │  • -maxConcurrentInserts: 2×CPU (最大并发写入数)        │  │
-│  │  • -insert.maxQueueDuration: 1min (排队超时)            │  │
-│  │  触发行为: 超时返回 HTTP 503                            │  │
-│  │  监控指标: vm_concurrent_insert_limit_timeout_total     │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 最大并发写入数限制                                         │
+│  • 排队超时控制                                               │
+│  • 触发行为: 超时返回 HTTP 503                                │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  Layer 3: 请求大小限制                                        │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  lib/protoparser/*/stream/streamparser.go               │  │
-│  │  • -maxInsertRequestSize: 32MB (Prometheus)             │  │
-│  │  • -influx.maxInsertRequestSize: 32MB (InfluxDB)        │  │
-│  │  • -datadog.maxInsertRequestSize: 64MB (DataDog)        │  │
-│  │  触发行为: 拒绝请求，返回错误                           │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 单次请求最大字节数                                         │
+│  • 支持多种协议独立配置                                       │
+│  • 触发行为: 拒绝请求                                         │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  Layer 4: 数据验证                                            │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  app/vminsert/main.go                                   │  │
-│  │  • -maxLabelsPerTimeseries: 30 (每 series 最大标签数)   │  │
-│  │  • -maxLabelValueLen: 16KB (标签值最大长度)             │  │
-│  │  触发行为: 超限标签被丢弃/截断                          │  │
-│  │  监控指标: vm_metrics_with_dropped_labels_total         │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 每 series 最大标签数                                       │
+│  • 标签值最大长度                                             │
+│  • 触发行为: 超限标签被丢弃/截断                              │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
-│  Layer 5: 基数限制 (Cardinality Limiting) ⭐关键配置          │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  lib/storage/storage.go                                 │  │
-│  │  • -storage.maxHourlySeries: 0 (每小时最大新 series)    │  │
-│  │  • -storage.maxDailySeries: 0 (每天最大新 series)       │  │
-│  │  触发行为: 超限 series 的数据被丢弃                     │  │
-│  │  监控指标: vm_hourly_series_limit_rows_dropped_total    │  │
-│  │           vm_daily_series_limit_rows_dropped_total      │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  Layer 5: 基数限制 (Cardinality Limiting) ⭐关键               │
+│  • 每小时最大新 series 数                                     │
+│  • 每天最大新 series 数                                       │
+│  • 触发行为: 超限 series 的数据被丢弃                         │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  Layer 6: 存储层保护                                          │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  lib/storage/storage.go & partition.go                  │  │
-│  │  • -storage.minFreeDiskSpaceBytes: 10MB (最小磁盘空间)  │  │
-│  │    → 低于阈值进入只读模式                               │  │
-│  │  • maxInmemoryParts: 60 (内存 parts 上限)               │  │
-│  │    → 达到上限时写入暂停，等待 merge                     │  │
-│  │  • maxRawRowsPerShard: 8MB (分片缓冲上限)               │  │
-│  │    → 超限自动 flush                                     │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 最小磁盘空间保护 → 低于阈值进入只读模式                    │
+│  • 内存 parts 上限 → 达到上限时写入暂停                       │
+│  • 分片缓冲上限 → 超限自动 flush                              │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
                                 ▼
@@ -184,77 +158,50 @@ VictoriaMetrics 支持两种部署模式：
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  Layer 1: 并发控制                                            │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  app/vmselect/main.go                                   │  │
-│  │  • -search.maxConcurrentRequests: 基于CPU计算           │  │
-│  │  • -search.maxQueueDuration: 10s (排队超时)             │  │
-│  │  触发行为: 超时返回 HTTP 429 (Too Many Requests)        │  │
-│  │  监控指标: vm_concurrent_select_limit_timeout_total     │  │
-│  │           vm_concurrent_select_current (当前并发数)     │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 最大并发查询数限制                                         │
+│  • 排队超时控制                                               │
+│  • 触发行为: 超时返回 HTTP 429                                │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  Layer 2: 请求验证                                            │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  app/vmselect/prometheus/prometheus.go                  │  │
-│  │  app/vmselect/searchutils/searchutils.go                │  │
-│  │  • -search.maxQueryLen: 16KB (查询语句最大长度)         │  │
-│  │  • -search.maxQueryDuration: 30s (查询超时)             │  │
-│  │  触发行为: 拒绝请求 / 超时中断                          │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 查询语句最大长度                                           │
+│  • 单次查询最大执行时间                                       │
+│  • 触发行为: 拒绝请求 / 超时中断                              │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  Layer 3: 搜索范围控制                                        │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  app/vmselect/prometheus/prometheus.go                  │  │
-│  │  app/vmselect/netstorage/netstorage.go                  │  │
-│  │  • -search.maxUniqueTimeseries: 300000 (最大 series)    │  │
-│  │  • -search.maxTagKeys: 100000 (最大 tag keys)           │  │
-│  │  • -search.maxTagValues: 100000 (最大 tag values)       │  │
-│  │  触发行为: 返回 "too many time series" 错误             │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 单次查询最大 series 数                                     │
+│  • 最大 tag keys / tag values 数                              │
+│  • 触发行为: 返回 "too many time series" 错误                 │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  Layer 4: 数据量控制                                          │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  app/vmselect/netstorage/netstorage.go                  │  │
-│  │  • -search.maxSamplesPerQuery: 1B (每查询最大采样点)    │  │
-│  │  • -search.maxSamplesPerSeries: 30M (每series最大采样点)│  │
-│  │  触发行为: 返回 "too many samples" 错误                 │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 每查询最大采样点数                                         │
+│  • 每 series 最大采样点数                                     │
+│  • 触发行为: 返回 "too many samples" 错误                     │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  Layer 5: 执行资源控制                                        │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  app/vmselect/netstorage/netstorage.go                  │  │
-│  │  app/vmselect/promql/eval.go                            │  │
-│  │  • -search.maxWorkersPerQuery: CPU核数 (并行度)         │  │
-│  │  • -search.maxMemoryPerQuery: 0 (单查询内存限制)        │  │
-│  │  • Deadline 持续检查 (贯穿整个执行过程)                 │  │
-│  │  触发行为: 限制并行度 / 拒绝请求 / 超时中断             │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 每查询最大 worker 数                                       │
+│  • 单查询内存限制                                             │
+│  • 执行过程持续检查 Deadline                                  │
+│  • 触发行为: 限制并行度 / 拒绝请求 / 超时中断                 │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  Layer 6: 结果控制                                            │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  app/vmselect/prometheus/prometheus.go                  │  │
-│  │  • -search.maxPointsPerTimeseries: 30000 (返回点数限制) │  │
-│  │  触发行为: 数据截断                                     │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 返回结果每 series 最大点数                                 │
+│  • 触发行为: 数据截断                                         │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
 ┌───────────────────────────────▼───────────────────────────────┐
 │  监控与日志                                                   │
-│  ┌─────────────────────────────────────────────────────────┐  │
-│  │  • -search.logSlowQueryDuration: 5s (慢查询日志阈值)    │  │
-│  │  • -search.logQueryMemoryUsage: 0 (内存使用日志阈值)    │  │
-│  │  监控指标: vm_slow_queries_total                        │  │
-│  └─────────────────────────────────────────────────────────┘  │
+│  • 慢查询日志记录                                             │
+│  • 高内存查询日志记录                                         │
 └───────────────────────────────┬───────────────────────────────┘
                                 │
                                 ▼
@@ -265,103 +212,102 @@ VictoriaMetrics 支持两种部署模式：
 
 ## VictoriaMetrics 限流相关参数配置
 
-### 写入端参数
+以下参数按照限流层次顺序介绍，适用于集群版本部署。
 
-```bash
-# ==================== vminsert / 单机版 ====================
+### vminsert 参数（写入层）
 
-# --- 并发控制 ---
--maxConcurrentInserts=16              # 最大并发写入数，默认 2×CPU
--insert.maxQueueDuration=1m           # 写入排队超时，默认 1 分钟
+#### Layer 2: 并发控制
 
-# --- 请求大小限制 ---
--maxInsertRequestSize=33554432        # 单次写入请求最大 32MB (Prometheus 协议)
--influx.maxInsertRequestSize=33554432 # InfluxDB 协议请求大小限制
--datadog.maxInsertRequestSize=67108864 # DataDog 协议请求大小限制
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-maxConcurrentInserts` | 2×CPU | 最大并发写入请求数。超过此数量的请求会排队等待 |
+| `-insert.maxQueueDuration` | 1m | 写入请求排队等待的最大时间。超时返回 HTTP 503 |
 
-# --- 标签限制 ---
--maxLabelsPerTimeseries=30            # 每个 series 最大标签数
--maxLabelValueLen=16384               # 标签值最大长度 16KB
+#### Layer 3: 请求大小限制
 
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-maxInsertRequestSize` | 32MB | Prometheus remote write 协议单次请求最大字节数 |
+| `-influx.maxInsertRequestSize` | 32MB | InfluxDB 协议单次请求最大字节数 |
+| `-datadog.maxInsertRequestSize` | 64MB | DataDog 协议单次请求最大字节数 |
+| `-opentsdbhttp.maxInsertRequestSize` | 32MB | OpenTSDB HTTP 协议单次请求最大字节数 |
 
-# ==================== vmstorage / 单机版 ====================
+#### Layer 4: 数据验证
 
-# --- 基数限制 (防止高基数导致 OOM，强烈建议配置) ---
--storage.maxHourlySeries=500000       # 每小时最大新增 series 数
--storage.maxDailySeries=2000000       # 每天最大新增 series 数
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-maxLabelsPerTimeseries` | 30 | 每个 series 允许的最大标签数。超出的标签会被丢弃 |
+| `-maxLabelValueLen` | 16KB | 单个标签值的最大长度。超出部分会被截断 |
 
-# --- 磁盘空间保护 ---
--storage.minFreeDiskSpaceBytes=10485760  # 最小剩余磁盘空间，默认 10MB
-                                         # 低于此值进入只读模式
+### vmstorage 参数（存储层）
 
-# --- 内存限制 ---
--memory.allowedPercent=60             # 允许使用的内存百分比，默认 60%
+#### Layer 5: 基数限制
 
-# --- Merge 控制 (影响 CPU 和 IO) ---
--bigMergeConcurrency=1                # 大 merge 并发数
--smallMergeConcurrency=2              # 小 merge 并发数
-```
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-storage.maxHourlySeries` | 0 (不限制) | 每小时允许新增的最大 series 数。**强烈建议配置此参数防止高基数导致 OOM** |
+| `-storage.maxDailySeries` | 0 (不限制) | 每天允许新增的最大 series 数 |
 
-### 查询端参数
+#### Layer 6: 存储层保护
 
-```bash
-# ==================== vmselect / 单机版 ====================
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-storage.minFreeDiskSpaceBytes` | 10MB | 最小剩余磁盘空间。低于此值存储进入只读模式，拒绝所有写入 |
+| `-memory.allowedPercent` | 60% | 允许使用的系统内存百分比。用于控制缓存大小 |
+| `-bigMergeConcurrency` | CPU/2 | 大数据块 merge 的并发数。影响 CPU 和 IO |
+| `-smallMergeConcurrency` | CPU/2 | 小数据块 merge 的并发数。影响 CPU 和 IO |
+| `-retentionPeriod` | 1 month | 数据保留时间 |
 
-# --- 并发控制 ---
--search.maxConcurrentRequests=16      # 最大并发查询数，默认基于 CPU 计算
--search.maxQueueDuration=10s          # 查询排队超时，默认 10 秒
+### vmselect 参数（查询层）
 
-# --- 超时控制 ---
--search.maxQueryDuration=60s          # 单次查询最大执行时间，默认 30 秒
+#### Layer 1: 并发控制
 
-# --- 查询长度 ---
--search.maxQueryLen=16384             # 查询语句最大长度，默认 16KB
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-search.maxConcurrentRequests` | 2×CPU (最大16) | 最大并发查询请求数。超过此数量的请求会排队等待 |
+| `-search.maxQueueDuration` | 10s | 查询请求排队等待的最大时间。超时返回 HTTP 429 |
 
-# --- 数据量限制 ---
--search.maxUniqueTimeseries=300000    # 单次查询最大 series 数
--search.maxSamplesPerQuery=1000000000 # 单次查询最大采样点数 (1B)
--search.maxSamplesPerSeries=30000000  # 单个 series 最大采样点数 (30M)
--search.maxPointsPerTimeseries=30000  # 返回结果每 series 最大点数
+#### Layer 2: 请求验证
 
-# --- 资源限制 ---
--search.maxWorkersPerQuery=0          # 每查询最大 worker 数，0 表示使用 CPU 核数
--search.maxMemoryPerQuery=0           # 单次查询最大内存，0 表示不限制
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-search.maxQueryLen` | 16KB | 查询语句的最大长度 |
+| `-search.maxQueryDuration` | 30s | 单次查询的最大执行时间。超时会中断查询 |
 
-# --- 慢查询日志 ---
--search.logSlowQueryDuration=5s       # 超过此时间的查询记录到日志
--search.logQueryMemoryUsage=0         # 超过此内存的查询记录到日志
-```
+#### Layer 3: 搜索范围控制
 
-### 推荐生产配置模板
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-search.maxUniqueTimeseries` | 300000 | 单次查询允许匹配的最大 series 数 |
+| `-search.maxTagKeys` | 100000 | /api/v1/labels 接口返回的最大 tag keys 数 |
+| `-search.maxTagValues` | 100000 | /api/v1/label/.../values 接口返回的最大 tag values 数 |
 
-**64GB 内存机器配置示例：**
+#### Layer 4: 数据量控制
 
-```bash
-# vmstorage 启动参数
--storageDataPath=/data/victoriametrics
--retentionPeriod=30d
--memory.allowedPercent=60
--storage.maxHourlySeries=500000
--storage.maxDailySeries=2000000
--storage.minFreeDiskSpaceBytes=10737418240  # 10GB
--bigMergeConcurrency=1
--smallMergeConcurrency=2
--loggerLevel=WARN
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-search.maxSamplesPerQuery` | 1000000000 | 单次查询允许扫描的最大采样点数 |
+| `-search.maxSamplesPerSeries` | 30000000 | 单个 series 允许返回的最大采样点数 |
 
-# vminsert 启动参数
--maxConcurrentInserts=16
--maxLabelsPerTimeseries=30
--maxLabelValueLen=4096
--insert.maxQueueDuration=1m
+#### Layer 5: 执行资源控制
 
-# vmselect 启动参数
--search.maxConcurrentRequests=8
--search.maxQueryDuration=60s
--search.maxUniqueTimeseries=300000
--search.maxSamplesPerQuery=500000000
--search.maxMemoryPerQuery=4294967296  # 4GB
--search.logSlowQueryDuration=10s
-```
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-search.maxWorkersPerQuery` | CPU 核数 | 单次查询使用的最大并行 worker 数 |
+| `-search.maxMemoryPerQuery` | 0 (不限制) | 单次查询允许使用的最大内存 |
+
+#### Layer 6: 结果控制
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-search.maxPointsPerTimeseries` | 30000 | 返回结果中每个 series 的最大数据点数 |
+
+#### 监控与日志
+
+| 参数 | 默认值 | 说明 |
+|------|--------|------|
+| `-search.logSlowQueryDuration` | 5s | 执行时间超过此值的查询会记录到日志 |
+| `-search.logQueryMemoryUsage` | 0 (不记录) | 内存使用超过此值的查询会记录到日志 |
 
 ---
 
@@ -429,28 +375,70 @@ du -sh /data/victoriametrics/*
 内存暴涨
     │
     ├─→ indexdb 过大 (>10GB)?
-    │       └─→ 高基数问题 → 启用基数限制 + 清理高基数指标
+    │       │
+    │       └─→ 是: 高基数问题
+    │           ├─→ 检查 vm_new_timeseries_created_total 增速
+    │           ├─→ 检查 cardinality 页面找出高基数指标
+    │           └─→ 跳转【场景A: 高基数处理】
     │
     ├─→ vm_active_merges 持续很高?
-    │       └─→ 写入压力过大 → 降低写入并发 + 上游限流
+    │       │
+    │       └─→ 是: 写入压力过大，merge 跟不上
+    │           ├─→ 检查 vm_rows_added_to_storage_total 增速
+    │           ├─→ 检查 vm_parts 数量是否持续增长
+    │           └─→ 跳转【场景B: 写入压力处理】
     │
-    └─→ vm_concurrent_select_current 很高?
-            └─→ 查询压力过大 → 限制查询并发 + 优化大查询
+    ├─→ vm_concurrent_select_current 很高?
+    │       │
+    │       └─→ 是: 查询压力过大
+    │           ├─→ 检查 active_queries 找出大查询
+    │           ├─→ 检查 vm_rows_read_per_query 值
+    │           └─→ 跳转【场景C: 查询压力处理】
+    │
+    └─→ process_resident_memory 突然跳涨?
+            │
+            └─→ 是: 可能是单个大查询或大批量写入
+                ├─→ 检查 vmselect 日志找出大查询
+                ├─→ 检查 vminsert 日志找出大批量写入
+                └─→ 跳转对应场景处理
 ```
 
 #### 处理方案
 
-**高基数问题处理：**
+**场景A: 高基数处理**
 ```bash
 # 1. 启用基数限制（需重启）
 -storage.maxHourlySeries=300000
 -storage.maxDailySeries=1000000
 
-# 2. 配置 relabel 丢弃高基数指标
+# 2. 配置 relabel 丢弃高基数指标（vminsert 配置）
 # /etc/vminsert/relabel.yml
 - source_labels: [__name__]
   regex: "problem_metric_.*"
   action: drop
+
+# 3. 通知业务方优化指标（减少高基数标签）
+```
+
+**场景B: 写入压力处理**
+```bash
+# 1. 降低写入并发
+-maxConcurrentInserts=8
+
+# 2. 上游限流（vmagent/prometheus 端降低抓取频率）
+
+# 3. 扩容 vmstorage 节点
+```
+
+**场景C: 查询压力处理**
+```bash
+# 1. 限制查询并发
+-search.maxConcurrentRequests=4
+
+# 2. 限制单次查询数据量
+-search.maxSamplesPerQuery=100000000
+
+# 3. 通知用户优化查询
 ```
 
 #### 预防告警规则
@@ -467,6 +455,12 @@ du -sh /data/victoriametrics/*
   for: 10m
   annotations:
     summary: "新 series 创建速率过高，可能存在高基数问题"
+
+- alert: VMCardinalityLimitReached
+  expr: rate(vm_hourly_series_limit_rows_dropped_total[5m]) > 0
+  for: 1m
+  annotations:
+    summary: "基数限制已触发，正在丢弃数据"
 ```
 
 ---
@@ -517,7 +511,7 @@ go tool pprof -top cpu.prof | head -30
 |-----------|------|----------|
 | `mergeParts` | 数据合并 | 降低 merge 并发 |
 | `searchTSIDs` | 索引搜索 | 高基数问题 |
-| `regexp` | 正则匹配 | 优化查询 |
+| `regexp` | 正则匹配 | 优化查询，避免复杂正则 |
 | `decompress` | 解压缩 | 大量数据读取 |
 | `relabel` | 重标签 | 简化 relabel 规则 |
 
@@ -538,29 +532,80 @@ curl -s http://localhost:8482/metrics | grep vm_active_merges
 CPU 突然变高
     │
     ├─→ vmselect CPU 高?
-    │       ├─→ 有大查询 → 限制查询 + 通知用户优化
-    │       └─→ 慢查询增多 → 配置 -search.maxQueryDuration
+    │       │
+    │       ├─→ active_queries 中有大查询?
+    │       │       │
+    │       │       └─→ 是: 大查询导致
+    │       │           ├─→ 检查查询时间范围是否过大
+    │       │           ├─→ 检查是否使用了复杂正则
+    │       │           ├─→ 检查返回的 series 数量
+    │       │           └─→ 跳转【场景A: 大查询处理】
+    │       │
+    │       └─→ vm_slow_queries_total 增长快?
+    │               │
+    │               └─→ 是: 慢查询过多
+    │                   ├─→ 检查 top_queries 找出问题查询
+    │                   └─→ 跳转【场景B: 慢查询优化】
     │
     ├─→ vmstorage CPU 高?
-    │       ├─→ merge 活跃数高 → 降低 merge 并发
-    │       └─→ searchTSIDs 热点 → 高基数问题
+    │       │
+    │       ├─→ vm_active_merges 很高?
+    │       │       │
+    │       │       └─→ 是: merge 压力大
+    │       │           ├─→ 检查 vm_parts 数量
+    │       │           ├─→ 检查写入速率
+    │       │           └─→ 跳转【场景C: Merge 压力处理】
+    │       │
+    │       └─→ pprof 显示 searchTSIDs 热点?
+    │               │
+    │               └─→ 是: 索引搜索压力大
+    │                   ├─→ 通常是高基数问题
+    │                   └─→ 参考内存 SOP 的高基数处理
     │
     └─→ vminsert CPU 高?
-            ├─→ 写入 QPS 突增 → 上游限流
-            └─→ relabel 热点 → 简化 relabel 规则
+            │
+            ├─→ 写入 QPS 突增?
+            │       │
+            │       └─→ 是: 写入压力大
+            │           ├─→ 检查上游数据源
+            │           └─→ 跳转【场景D: 写入压力处理】
+            │
+            └─→ pprof 显示 relabel 热点?
+                    │
+                    └─→ 是: relabel 规则复杂
+                        ├─→ 检查 relabel 配置
+                        ├─→ 简化正则表达式
+                        └─→ 减少 relabel 规则数量
 ```
 
 #### 处理方案
 
-**大查询处理：**
+**场景A: 大查询处理**
 ```bash
-# 限制查询
+# 1. 限制查询时间和数据量
 -search.maxQueryDuration=30s
 -search.maxSamplesPerQuery=100000000
 -search.maxUniqueTimeseries=100000
+
+# 2. 通知用户优化查询
+# - 缩小时间范围
+# - 添加更精确的 label 过滤
+# - 避免使用 {__name__=~".+"} 这类全量查询
 ```
 
-**Merge 压力处理：**
+**场景B: 慢查询优化**
+```bash
+# 1. 启用慢查询日志
+-search.logSlowQueryDuration=5s
+
+# 2. 分析 top_queries 找出问题查询模式
+# 常见问题：
+# - 时间范围过大（如 30d）
+# - 正则过于复杂
+# - 缺少 label 过滤
+```
+
+**场景C: Merge 压力处理**
 ```bash
 # HDD 磁盘建议
 -bigMergeConcurrency=1
@@ -569,6 +614,17 @@ CPU 突然变高
 # SSD 磁盘可适当提高
 -bigMergeConcurrency=2
 -smallMergeConcurrency=4
+```
+
+**场景D: 写入压力处理**
+```bash
+# 1. 降低写入并发
+-maxConcurrentInserts=8
+
+# 2. 上游限流
+# - 增加 scrape_interval
+# - 减少抓取目标
+# - 使用 vmagent stream aggregation 预聚合
 ```
 
 #### 预防告警规则
@@ -585,6 +641,12 @@ CPU 突然变高
   for: 10m
   annotations:
     summary: "慢查询数量持续增长"
+
+- alert: VMMergeBacklog
+  expr: vm_parts{type="storage/small"} > 50
+  for: 15m
+  annotations:
+    summary: "Storage parts 积压，merge 可能跟不上"
 ```
 
 ---
@@ -661,41 +723,113 @@ curl -s http://localhost:8482/metrics | grep -E "vm_cache_(requests|misses)_tota
 IO 突然变高
     │
     ├─→ 写 IO 为主?
-    │       ├─→ vm_active_merges{type="storage/big"} > 0
-    │       │       └─→ 大 Merge 进行中，等待完成或降低并发
-    │       ├─→ 写入 QPS 突增
-    │       │       └─→ 上游限流
-    │       └─→ indexdb merge 很高
-    │               └─→ 高基数问题
+    │       │
+    │       ├─→ vm_active_merges{type="storage/big"} > 0?
+    │       │       │
+    │       │       └─→ 是: 大 Merge 正在进行
+    │       │           ├─→ 这是正常的后台操作
+    │       │           ├─→ 检查 merge 预计完成时间
+    │       │           └─→ 跳转【场景A: 大 Merge 处理】
+    │       │
+    │       ├─→ vm_rows_added_to_storage_total 突增?
+    │       │       │
+    │       │       └─→ 是: 写入量突增
+    │       │           ├─→ 检查上游数据源
+    │       │           └─→ 跳转【场景B: 写入压力处理】
+    │       │
+    │       └─→ vm_active_merges{type="indexdb"} 很高?
+    │               │
+    │               └─→ 是: IndexDB merge 压力大
+    │                   ├─→ 通常是高基数导致
+    │                   └─→ 参考内存 SOP 的高基数处理
     │
     ├─→ 读 IO 为主?
-    │       ├─→ 有大查询
-    │       │       └─→ 限制查询并发 + 优化查询
-    │       └─→ 缓存未命中率高
-    │               └─→ 增加缓存 / 等待预热
+    │       │
+    │       ├─→ active_queries 中有大查询?
+    │       │       │
+    │       │       └─→ 是: 查询读取大量数据
+    │       │           ├─→ 检查查询时间范围
+    │       │           ├─→ 检查返回的 series 数量
+    │       │           └─→ 跳转【场景C: 大查询处理】
+    │       │
+    │       └─→ vm_cache_misses_total 增长快?
+    │               │
+    │               └─→ 是: 缓存未命中率高
+    │                   ├─→ 可能刚重启，缓存未预热
+    │                   ├─→ 可能缓存配置过小
+    │                   ├─→ 可能查询了大量冷数据
+    │                   └─→ 跳转【场景D: 缓存未命中处理】
     │
-    └─→ 正在备份/snapshot?
-            └─→ 错峰执行备份
+    └─→ 读写都高?
+            │
+            ├─→ 正在进行 snapshot/backup?
+            │       │
+            │       └─→ 是: 备份操作导致
+            │           └─→ 跳转【场景E: 备份 IO 处理】
+            │
+            └─→ 多个大 merge 同时进行?
+                    │
+                    └─→ 是: Merge 操作读旧写新
+                        └─→ 跳转【场景A: 大 Merge 处理】
 ```
 
 #### 处理方案
 
-**大 Merge 处理：**
+**场景A: 大 Merge 处理**
 ```bash
-# 降低 merge 并发（会导致 parts 积压）
+# 1. 降低 merge 并发（会导致 parts 积压）
 -bigMergeConcurrency=1
 -smallMergeConcurrency=1
 
-# 或等待 merge 完成（通常是最佳选择）
+# 2. 或等待 merge 完成（通常是最佳选择）
+# 大 merge 是正常的后台操作，完成后 IO 会恢复
 watch -n 5 'curl -s http://localhost:8482/metrics | grep vm_active_merges'
+
+# 3. 根据磁盘类型长期优化
+# HDD: -bigMergeConcurrency=1 -smallMergeConcurrency=2
+# SSD: -bigMergeConcurrency=2 -smallMergeConcurrency=4
 ```
 
-**缓存未命中处理：**
+**场景B: 写入压力处理**
 ```bash
-# 增加内存允许百分比（更多内存给缓存）
+# 1. 降低写入并发
+-maxConcurrentInserts=4
+
+# 2. 上游限流
+# - 增加 scrape_interval
+# - 减少抓取目标
+
+# 3. 扩容 vmstorage 节点
+```
+
+**场景C: 大查询处理**
+```bash
+# 1. 限制查询并发和数据量
+-search.maxConcurrentRequests=2
+-search.maxSamplesPerQuery=50000000
+
+# 2. 通知用户优化查询
+```
+
+**场景D: 缓存未命中处理**
+```bash
+# 1. 如果刚重启，等待缓存预热（通常需要 10-30 分钟）
+
+# 2. 增加内存允许百分比（更多内存给缓存）
 -memory.allowedPercent=70
 
-# 等待缓存预热（重启后通常需要 10-30 分钟）
+# 3. 检查是否有大量冷数据查询
+```
+
+**场景E: 备份 IO 处理**
+```bash
+# 1. 错峰执行备份（避开业务高峰）
+
+# 2. 限制备份并发
+vmbackup -concurrency=1
+
+# 3. 使用 snapshot 方式（IO 影响更小）
+curl http://localhost:8482/snapshot/create
 ```
 
 #### 预防告警规则
@@ -718,6 +852,12 @@ watch -n 5 'curl -s http://localhost:8482/metrics | grep vm_active_merges'
   for: 15m
   annotations:
     summary: "Parts 积压，merge 可能跟不上写入"
+
+- alert: VMAssistedMergesHigh
+  expr: rate(vm_assisted_merges_total[5m]) > 0
+  for: 5m
+  annotations:
+    summary: "触发辅助 Merge，写入速度超过 Merge 速度"
 ```
 
 ---
